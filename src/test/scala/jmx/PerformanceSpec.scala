@@ -1,24 +1,16 @@
 package jmx
 
-import akka.actor._
-import akka.pattern._
-import akka.testkit.{ImplicitSender, TestKit}
-import akka.util.Timeout
-import org.scalatest._
+import java.lang.management.MemoryUsage
 
-import scala.concurrent.Await
-import scala.concurrent.duration._
+import akka.actor._
+import akka.testkit.TestKit
+import org.scalatest._
 
 class PerformanceSpec
   extends TestKit(ActorSystem("JMX"))
   with WordSpecLike
   with MustMatchers
-  with BeforeAndAfterAll
-  with ImplicitSender {
-
-  implicit val futureTimeout = Timeout(10.seconds)
-
-  val jmxPool = JmxPool(system, Host("localhost:11111"))
+  with BeforeAndAfterAll {
 
   override def afterAll() {
     TestKit.shutdownActorSystem(system)
@@ -28,9 +20,7 @@ class PerformanceSpec
 
     "compare the performance between copy and lens" in {
 
-      val jmx = Await.result((jmxPool.pool ? GetMBean).mapTo[MBean], 3.seconds)
-
-      val memory = jmx.getMemoryUsage.get
+      val memory = new MemoryUsage(123,234,345,456)
 
       var memory1: Memory = Memory(memory.getInit)
       val s = StopWatch()
