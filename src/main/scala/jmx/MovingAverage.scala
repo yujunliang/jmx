@@ -13,7 +13,7 @@ import scala.collection.immutable.Queue._
  * @param min min
  * @param max max
  */
-case class Range(min: Long = MaxValue, max: Long = MinValue) {
+class Range(val min: Long = MaxValue, val max: Long = MinValue) {
 
   /**
    * Modify the range after compare to the new sample
@@ -21,8 +21,8 @@ case class Range(min: Long = MaxValue, max: Long = MinValue) {
    * @return     modified range
    */
   def update(data: Long) = data match {
-    case d if d < min => copy(min = d)
-    case d if d > max => copy(max = d)
+    case d if d < min => new Range(d, max)
+    case d if d > max => new Range(min, d)
     case _            => this
   }
 
@@ -30,16 +30,27 @@ case class Range(min: Long = MaxValue, max: Long = MinValue) {
    * Modify the range after compare to the new sample
    * @return     modified range
    */
-  def updatef = { data : Long => if (min > data) copy(min = data) else if (max < data) copy(max = data) else this }
+  def updatef = { d : Long => if (min > d) new Range(d, max) else if (max < d) new Range(min, d) else this }
 
   override def toString = s"$min/$max"
+
+  override def equals(other: Any): Boolean = {
+    other match {
+      case that: Range => that.min == this.min && that.max == this.max
+      case _ => false
+    }
+  }
+
+  override def hashCode() = {
+    max.hashCode() * 31 + min.hashCode()
+  }
 }
 
 /**
  * data structure to calculate moving average.
  * @param queue entry of 10 samples
  */
-case class MovingAverage(total: Long = 0L, range : Range = Range(), queue: Queue[Long] = empty) {
+case class MovingAverage(total: Long = 0L, range : Range = new Range(), queue: Queue[Long] = empty) {
 
   /**
    * maintaining max number of 10 samples in the queue, keep track of min and max data entered and total
@@ -90,19 +101,23 @@ object MovingAverage {
    * @tparam A type parameter of the queue
    * @return   modified queue
    * tupled parameters */
-  def enqueue1[A](d: A, q: Queue[A])      = (if (q.size == 10) q.dequeue._2 else q).enqueue(d)
+  def enqueue1[A](d: A, q: Queue[A]) : Queue[A] = (if (q.size == 10) q.dequeue._2 else q).enqueue(d)
 
   /** curried parameters */
-  def enqueue2[A](d: A)(q: Queue[A])      =  enqueue1(d,q)
+  def enqueue2[A](d: A)(q: Queue[A]) : Queue[A] =           enqueue1(d,q)
 
   /** one parameter, one lambda expression */
-  def enqueue3[A](d: A)  : Queue[A] => Queue[A] =  enqueue2(d)
+  def enqueue3[A](d: A)  : Queue[A] => Queue[A] =      q => enqueue1(d,q)
 
   /** 0 parameter, two lambda expressions */
-  def enqueue4[A]  : A =>  Queue[A] => Queue[A]  =  enqueue3
+  def enqueue4[A]  : A =>  Queue[A] => Queue[A] = d => q => enqueue3(d)(q)
 
   /** 0 parameter, two lambda expressions */
-  def enqueue5[A]  : A =>  Queue[A] => Queue[A]  = d => q => enqueue2(d)(q)
+  def enqueue5[A]  : A =>  Queue[A] => Queue[A] = d =>      enqueue3(d)
+
+  /** 0 parameter, two lambda expressions */
+  def enqueue6[A]  : A =>  Queue[A] => Queue[A] =           enqueue3
+
 
   /**
    * Lens for count property of MovingAverage
