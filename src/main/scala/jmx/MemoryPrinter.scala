@@ -3,7 +3,7 @@ package jmx
 import java.lang.management.MemoryUsage
 
 import akka.actor.Actor
-import akka.pattern.{ask, _}
+import jmx.MBean.{MemoryData, HeapMemoryUsage}
 import jmx.Memory._
 import jmx.MovingAverage._
 import shapeless._
@@ -21,9 +21,9 @@ class MemoryPrinter extends Actor with ConnectionPool {
    * into too much details.
    */
   override def receive = {
-    case Read                   => getMemory
-    case MemoryData(h, Some(m)) => process(h, m)
-    case Print                  => println(mergeMemoryCharts)
+    case Read             => getMemory
+    case MemoryData(h, m) => process(h, m)
+    case Print            => println(mergeMemoryCharts)
   }
 
   /**
@@ -47,12 +47,7 @@ class MemoryPrinter extends Actor with ConnectionPool {
    * @return Map of host to MemoryUsage
    */
   def getMemory = pool.par.map { jmx =>
-    val future = for {
-      bean <- (jmx.pool ? GetMBean).mapTo[MBean]
-      memory = bean.getMemoryUsage
-    } yield memory
-
-    future.map(m => self ! MemoryData(jmx.host, m)).recover { case _ => Read } pipeTo self
+    jmx.pool ! HeapMemoryUsage
   }
 
   /**
@@ -70,7 +65,6 @@ class MemoryPrinter extends Actor with ConnectionPool {
       case None       => Memory(m.getInit)
     }
     memory += h -> (mem << m)
-    eventStream.publish(RawMemory(m))
   }
 
   /**
@@ -99,13 +93,6 @@ class MemoryPrinter extends Actor with ConnectionPool {
     }
     new String(chars)
   }
-
-  /**
-   * Internal message to pass around memory date
-   * @param h host
-   * @param m memory data
-   */
-  case class MemoryData(h: Host, m: Option[MemoryUsage])
 
 }
 
@@ -220,8 +207,6 @@ object Memory {
    * @param d new memory data
    * @return  modified memory from this memory data
    */
-
-
   def lens1(m: Memory)(l: MovingAverageLens)(d: Long) = (movingAverageLenses compose l).modify(m) { case (c, (r, q)) => (c + 1, (r.update(d), enqueue1(d, q))) }
 
   def lens2(m: Memory)(l: MovingAverageLens)(d: Long) = (movingAverageLenses compose l).modify(m) { case (c, (r, q)) => (c + 1, (r.update(d), enqueue2(d)(q))) }

@@ -1,6 +1,8 @@
 package jmx
 
 import akka.actor._
+import akka.io.Tcp.Close
+import jmx.MBean.{Connect, JmxAttribute}
 
 import scala.concurrent.duration._
 
@@ -13,13 +15,12 @@ private[jmx] class Connection(host: Host)
    * into too much details.
    */
   override def receive = {
-    case GetMBean                     => dispatch()
-    case jmx: MBean                   => returnToPool(jmx)
-    case BrokenBean(jmx)              => recycle(jmx)
-    case Failed(h)                    => retry
-    case error: Error                 => eventStream publish error
-    case DeadLetter(jmx: MBean, _, _) => returnToPool(jmx)
-    case d: DeadLetter                => log.info(s"Ignoring DeadLetter letter $d")
+    case e: JmxAttribute                 => get(e)
+    case jmx: ActorRef                   => returnToPool(jmx)
+    case BrokenBean(jmx)                 => recycle(jmx)
+    case error: Error                    => eventStream publish error
+    case DeadLetter(jmx: ActorRef, _, _) => returnToPool(jmx)
+    case d: DeadLetter                   => log.info(s"Ignoring DeadLetter letter $d")
   }
 
   /**
@@ -30,20 +31,19 @@ private[jmx] class Connection(host: Host)
   val retryInterval   = config.getInt("jmx.pool.retry-seconds").seconds
 
   val maxSize         = config.getInt("jmx.pool.size") match {
-    case s if s <= 0 => 1 
+    case s if s <= 0 => 1
     case s           => s
   }
 
-  val connector       = context.actorOf(Props(new Connector()), name = "connector")
-
-  var idleConnections = Set[MBean]()
-  var busyConnections = Set[MBean]()
+  var idleConnections = Set[ActorRef]()
+  var busyConnections = Set[ActorRef]()
   var waiting         = Set[Host]()
 
   /**
    * Subscribe to DeadLetter
    */
   eventStream.subscribe(self, classOf[DeadLetter])
+  connect()
 
   /**
    * Unsubscribe DeadLetter
@@ -54,35 +54,26 @@ private[jmx] class Connection(host: Host)
   }
 
   /**
-   * Schedule Retry to Connect to JMX
-   */
-  private[this] def retry = scheduler.scheduleOnce(retryInterval, connector, Connect(host))
-
-  /**
    * Close the current JMX and create a new one.
    * @param jmx the JMX to be closed.
    */
-  private def recycle(jmx: MBean) {
-    try 
-      jmx.close()
-    catch {
-      case _: Throwable => /* Ignore */
-    }
-    connect(jmx.host)
+  private def recycle(jmx: ActorRef) {
+    jmx ! Close
+    connect()
   }
 
   /**
    * Dispatch an existing JMX or create one if it doesn't exist.
    */
-  private[this] def dispatch() = idleConnections.lastOption match {
+  private[this] def get(e : JmxAttribute) = idleConnections.lastOption match {
     case Some(jmx) =>
       idleConnections -= jmx
       busyConnections += jmx
-      sender ! jmx
+      jmx forward e
 
     case None =>
       if (busyConnections.size < maxSize) {
-        connect(host)
+        connect()
         stash()
       }
   }
@@ -91,39 +82,35 @@ private[jmx] class Connection(host: Host)
    * Return the jmx back to pool
    * @param jmx JMX
    */
-  private[this] def returnToPool(jmx: MBean) = {
+  private[this] def returnToPool(jmx: ActorRef) = {
     if (idleConnections.size + busyConnections.size <= maxSize) {
       idleConnections += jmx
       busyConnections -= jmx
     } else {
-      jmx.close() 
+      jmx ! Close
     }
-    waiting -= jmx.host
-    unstashAll() 
+    waiting -= host
+    unstashAll()
   }
 
   /**
    * request to connect to a host
-   * @param host the host to connect to
    */
-  private[this] def connect(host: Host) = if (!waiting.contains(host)) {
+  private[this] def connect() = if (!waiting.contains(host)) {
     waiting += host
-    connector ! Connect(host)
+    val jmx = context.actorOf(Props(new MBean(host, self)))
+    jmx  ! Connect
+    self ! jmx
   }
 
 }
-
-/**
- * Request a JMX bean from the pool
- */
-case object GetMBean
 
 /**
  * Sent to event stream when JMX error occurs
  */
 private[jmx] case class Error(duration: FiniteDuration, e: Exception)
 
-private[jmx] case class BrokenBean(jmx: MBean)
+private[jmx] case class BrokenBean(jmx: ActorRef)
 
 
 
