@@ -21,7 +21,7 @@ class MemoryPrinter extends Actor with ConnectionPool {
    * into too much details.
    */
   override def receive = {
-    case Read             => getMemory
+    case Read             => requestUsage()
     case MemoryData(h, m) => process(h, m)
     case Print            => println(mergeMemoryCharts)
   }
@@ -46,7 +46,7 @@ class MemoryPrinter extends Actor with ConnectionPool {
    * get JMX connection and memory usage data and make a map of host to MemoryUsage
    * @return Map of host to MemoryUsage
    */
-  def getMemory = pool.par.map { jmx =>
+  def requestUsage() = pool.par.foreach { jmx =>
     jmx.pool ! HeapMemoryUsage
   }
 
@@ -80,8 +80,8 @@ class MemoryPrinter extends Actor with ConnectionPool {
     }
     val maxLength = strings.map(_.length).max
     val chars = ("Memory:" + " " * maxLength).toCharArray
-    (7 to maxLength).map { i =>
-      strings.map { s =>
+    (7 to maxLength).foreach { i =>
+      strings.foreach { s =>
         if (s.length >= i + 1 && s.charAt(i) != ' ') {
           if (chars(i) == ' ') {
             chars.update(i, s.charAt(i))
