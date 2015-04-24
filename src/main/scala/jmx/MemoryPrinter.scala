@@ -86,8 +86,8 @@ class MemoryPrinter extends Actor with ConnectionPool {
     }
     val maxLength = strings.map(_.length).max
     val chars = ("Memory:" + " " * maxLength).toCharArray
-    (7 to maxLength).map { i =>
-      strings.map { s =>
+    (7 to maxLength).foreach { i =>
+      strings.foreach { s =>
         if (s.length >= i + 1 && s.charAt(i) != ' ') {
           if (chars(i) == ' ') {
             chars.update(i, s.charAt(i))
