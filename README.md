@@ -3,6 +3,8 @@ Scala JMX Utility Library
 
 This library is provided for Scala 2.11 applications that want to connect to JMX.
 
+It illustrates how to use AKKA actor to develop reactive applications. 
+
 
 To Run It
 ---------
