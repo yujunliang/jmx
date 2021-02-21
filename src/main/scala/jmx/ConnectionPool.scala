@@ -42,4 +42,5 @@ private[jmx] object Host {
   }
 
   implicit def stringToHost(str: String): Host = Host(str)
+
 }

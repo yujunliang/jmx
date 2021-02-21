@@ -6,39 +6,80 @@ import javax.management.openmbean.CompositeData
 import javax.management.remote.{JMXConnector, JMXConnectorFactory, JMXServiceURL}
 import javax.management.{MBeanServerConnection, ObjectName}
 
-import akka.actor.ActorRef
-import jmx.JmxAttribute._
+import akka.actor.{ActorRef, FSM, Stash}
+import akka.io.Tcp.Close
+import jmx.MBean._
 
 import scala.collection.JavaConversions._
+import scala.concurrent.duration._
 import scala.util.{Failure, Success, Try}
 
 /**
  * Wrapper class to Java MBeanConnection
- * @param host            JMX Host
- * @param connection      Java MBeanServerConnection
- * @param connector       Java JMXConnector
+ * @param host        JMX Host
  * @param connectionPool  connectionPool ActorRef
  */
-case class MBean(
+class MBean(
   host           : Host,
-  connection     : MBeanServerConnection,
-  connector      : JMXConnector,
   connectionPool : ActorRef
-  ){
+  ) extends FSM[State, Data] with Stash {
 
   /**
-   * Close the JMXConnector
+   * The following is an outline of the responsibilities of this state machine, it explains what
+   * this state machine does, so it is concise and short, you can get an idea of what this
+   * State Machine does without going into too much details.
    */
-  def close() {
-    connector.close()
+  startWith(Idle, EventsBuffered)
+
+  when(Idle) {
+    case Event(Connect, _)         => connect
   }
 
+  when(WaitingForCall, 10 seconds) {
+    case Event(HeapMemoryUsage, _) => getMemoryUsage
+      stay()
+    case Event(Close, _)           => connector.close()
+      stop()
+    case Event(StateTimeout, _)    => stay()
+    case _                         => stash()
+      stay()
+  }
+
+  whenUnhandled {
+    case Event(m, _)               => goto(WaitingForCall)
+  }
+
+  initialize()
+
+
+  /**
+   * The following are the details of this FSM, it explains how this actor works, so if
+   * you are working on changing the behaviour of this actor, you can dig into the details now,
+   * otherwise you can skip reading them.
+   */
+  var connector  : JMXConnector = _
+  var connection : MBeanServerConnection = _
+
+  def connect = {
+    try {
+      var map = Map[String, Array[String]]()
+      val credentials = new Array[String](2)
+
+      map += "jmx.remote.credentials" -> credentials
+      connector = JMXConnectorFactory.newJMXConnector(new JMXServiceURL("rmi", "", 0, s"/jndi/rmi://$host/jmxrmi"), map)
+      connector.connect()
+      connection = connector.getMBeanServerConnection
+      goto(WaitingForCall)
+    } catch {
+      case e: Exception => goto(Idle) using Connect
+    }
+  }
   /**
    * Get Memory Usage
    * @return  Java MemoryUsage
    */
-  def getMemoryUsage = getAttribute(heapMemoryUsage) match {
-    case Some(a) => Some(MemoryUsage.from(a))
+  def getMemoryUsage = getAttribute(HeapMemoryUsage.name, HeapMemoryUsage.attribute) match {
+    case Some(a) => sender ! MemoryData(host, MemoryUsage.from(a))
     case None    => None
   }
 
@@ -46,14 +87,13 @@ case class MBean(
    * Get JMX Attribute, can be MemoryUsage, GarbageCollectionInfo or others
    * @return  CompositeData representing MemoryUsage, GarbageCollectionInfo or others
    */
-  def getAttribute: JmxAttribute => Option[CompositeData] = {
-    j =>
-      execute {
-        _.getAttribute(j.name, j.attribute).asInstanceOf[CompositeData]
-      } match {
-        case Success(data) => Some(data)
-        case Failure(e) => None
-      }
+  def getAttribute(name: ObjectName, attribute: String) : Option[CompositeData] = {
+    execute {
+      _.getAttribute(name, attribute).asInstanceOf[CompositeData]
+    } match {
+      case Success(data) => Some(data)
+      case Failure(e)    => None
+    }
   }
 
   /**
@@ -65,53 +105,50 @@ case class MBean(
     val startTime = new StopWatch
     try {
       val result = f(connection)
-      connectionPool ! this
+      connectionPool ! self
       Success(result)
     } catch {
       case e: IOException =>
-        connectionPool ! BrokenBean(this)
+        connectionPool ! BrokenBean(self)
         Failure(e)
       case e : Exception =>
         connectionPool ! Error(startTime.duration, e)
-        connectionPool ! this
+        connectionPool ! self
         Failure(e)
     }
   }
 }
 
-/**
- * Companion object of MBean case class
- */
-private[jmx] object MBean {
-
-  def apply(hostPort: Host, poolActor: ActorRef): Try[MBean] = Try {
-    var map = Map[String, Array[String]]()
-    val credentials = new Array[String](2)
-
-    map += "jmx.remote.credentials" -> credentials
-    val connector = JMXConnectorFactory.newJMXConnector(new JMXServiceURL("rmi", "", 0, s"/jndi/rmi://$hostPort/jmxrmi"), map)
-    connector.connect()
-
-    MBean (
-      host           = hostPort,
-      connection     = connector.getMBeanServerConnection,
-      connector      = connector,
-      connectionPool = poolActor
-    )
+object MBean {
+  /**
+   * trait JMX Attribute
+   */
+  private[jmx] trait JmxAttribute {
+    val name: ObjectName
+    val attribute: String
   }
 
+  case object HeapMemoryUsage extends JmxAttribute {
+    override val name = new ObjectName("java.lang:type=Memory")
+    override val attribute = "HeapMemoryUsage"
+  }
+
+  sealed trait State
+  case object Idle           extends State
+  case object WaitingForCall extends State
+
+  sealed trait Data
+  case object EventsBuffered extends Data
+  case object Connect        extends Data
+  /**
+   * message to pass around memory date
+   * @param h host
+   * @param m memory data
+   */
+  case class MemoryData(h: Host, m: MemoryUsage)
+
 }
 
-/**
- * Case class of JMX Attribute
- * @param name      name
- * @param attribute attribute
- */
-private[jmx] case class JmxAttribute(name: ObjectName, attribute: String)
 
-object JmxAttribute  {
-  val heapMemoryUsage = JmxAttribute(
-    name      = new ObjectName("java.lang:type=Memory"),
-    attribute = "HeapMemoryUsage"
-  )
-}
+
+
